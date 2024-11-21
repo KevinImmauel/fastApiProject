@@ -1,42 +1,48 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-import traceback
+from fastapi.responses import JSONResponse
+from ultralytics import YOLO
+import cv2
+import numpy as np
 
+# Initialize FastAPI app
 app = FastAPI()
 
+# Load YOLO model
+model_path = "last.pt"
+model = YOLO(model_path)
 
 @app.post("/predict/")
 async def predict_image(file: UploadFile = File(...)):
-    try:
-        # Read file content
-        content = await file.read()
-        if not content:
-            raise HTTPException(status_code=400, detail="File content is empty.")
+    # Check if the uploaded file is an image
+    if file.content_type not in ["image/jpeg", "image/png"]:
+        raise HTTPException(status_code=400, detail="Invalid image format. Please upload a JPEG or PNG image.")
 
-        # Save to temporary path if necessary for cv2 reading
-        with open("temp_image.jpg", "wb") as temp_file:
-            temp_file.write(content)
+    # Read image from upload
+    image_bytes = await file.read()
+    image_np = np.frombuffer(image_bytes, np.uint8)
+    image = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
 
-        # Run the prediction (ensure your model path is correct)
-        results = model.predict(source="temp_image.jpg", conf=0.01, show=True)
+    # Run YOLO prediction
+    results = model.predict(source=image, conf=0.01)
 
-        # Format and return the response
-        predictions = []
-        for result in results:
-            for box in result.boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                confidence = box.conf[0]
-                class_id = int(box.cls[0])
-                label = model.names[class_id]
+    # Prepare response data
+    response_data = []
+    highest = 0
+    labelHigh = ''
 
-                predictions.append({
-                    "label": label,
-                    "confidence": float(confidence),
-                    "box": [x1, y1, x2, y2]
-                })
+    for result in results:
+        for box in result.boxes:
+            confidence = box.conf[0]
+            class_id = int(box.cls[0])
+            label = model.names[class_id]
+            if float(f'{confidence:.2}') > highest:
+                highest = float(f'{confidence:.2}')
+                labelHigh = label
 
-        return {"predictions": predictions}
+    response_data.append({
+        labelHigh:highest
+    })
 
-    except Exception as e:
-        traceback_str = ''.join(traceback.format_tb(e.__traceback__))
-        print(f"Error: {e}\nTraceback: {traceback_str}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+    return JSONResponse(content={"results": response_data})
+
+# Run the app with `uvicorn filename:app --reload`
